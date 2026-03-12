@@ -1,8 +1,9 @@
 .dockerignore
-.envrc
 .git
 .gitignore
-.gitlab-ci.yml
-Dockerfile
+.env*
+.venv/
+__pycache__/
 README.md
-b2_api_key
+LICENSE
+.vscode/

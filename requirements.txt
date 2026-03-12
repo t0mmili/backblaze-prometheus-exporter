@@ -1,2 +1,0 @@
-prometheus_-client~=0.21.1
-b2sdk~=2.8.0

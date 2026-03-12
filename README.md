@@ -1,57 +1,125 @@
 # Backblaze Prometheus Exporter
 
-Export prometheus metrics on last update time and size of paths in Backblaze B2 storage.
+![Docker Pulls](https://img.shields.io/docker/pulls/t0mmili/backblaze-prometheus-exporter)
+![Docker Image Size](https://img.shields.io/docker/image-size/t0mmili/backblaze-prometheus-exporter)
+![GitHub License](https://img.shields.io/github/license/t0mmili/backblaze-prometheus-exporter)
+![GitHub Release](https://img.shields.io/github/release/t0mmili/backblaze-prometheus-exporter)
 
-## Usage
+Export Prometheus metrics for Backblaze B2 buckets and paths, including file count, total size, and last upload timestamp.
 
-A Backblaze B2 API key with read access to the desired buckets is required.
+Supports monitoring multiple buckets and paths with background data collection to ensure high performance.
 
-### Run
+## :bar_chart: Metrics
 
-Install python dependencies using pip (`pip install -r requirements.txt`).
-Use of a virtual python environment is advised.
+### Backblaze B2
 
-Configuration via environment variables:
+- `backblaze_b2_path_files_count` - Gauge: Total number of files in the path.
+- `backblaze_b2_path_files_latest_version_only` - Gauge: Whether only the latest version (1) or all versions (0) of files are processed.
+- `backblaze_b2_path_last_upload_seconds` - Gauge: Unix timestamp of the most recent upload in the path.
+- `backblaze_b2_path_size_bytes` - Gauge: Total size of files in the path.
 
-* Set `B2_APPLICATION_KEY_ID` to the key ID.
-* Set `B2_APPLICATION_KEY_FILE` to a file containing the B2 api key, or set `B2_APPLICATION_KEY` to the key directly (insecure).
-* Set `B2_PATHS` to a json representation of a dictionary. Keys are buckets, values are lists of paths in that bucket to monitor.
-  Example: '{"my-bucket": ["some/path/to/check", "some/other/path/to/check"]}'
+### Exporter
 
-Optionally:
+- `backblaze_b2_scrape_duration_seconds` - Gauge: Time taken to fetch stats.
+- `backblaze_b2_scrape_last_time_seconds` - Unix timestamp of the most recent successful scrape.
+- `backblaze_b2_scrape_success` - Gauge: Whether the last scrape was successful (1) or failed (0).
 
-* Set `METRICS_PORT` to the port to be used. Default is 52000.
-* Set `UPDATE_INTERVAL` to the interval between updates, in seconds. Default is 30 minutes.
+## :stopwatch: Understanding Intervals
 
-Finally:
+It is important to distinguish between how Prometheus collects data and how this exporter fetches data from Backblaze:
 
+- `scrape_interval` **(Prometheus)**: This defines how often Prometheus hits the `/metrics` endpoint. Because this exporter uses a background thread, the `/metrics` endpoint responds instantly with cached data.
+- `METRICS_UPDATE_INTERVAL` **(Exporter)**: This defines how often the background thread actually calls the Backblaze B2 API.
+
+## :rocket: Production Deployment
+
+The Docker image uses **Gunicorn** as the WSGI server, with threaded worker model.
+
+Gunicorn is configured via the `GUNICORN_CMD_ARGS` environment variable.
+
+> [!CAUTION]
+> The exporter is designed to run with a single worker (`--workers=1`). Do not increase the number of workers.  
+> Each worker process spawns its own background thread, which calls Backblaze API.
+
+### Default Configuration
+
+The image ships with the following default settings:
+
+- Workers: `1` (Ensures only one background scraper runs)
+- Threads: `4` (Allows the web server to handle multiply concurrent requests)
+- Worker class: `gthread`
+- Bind address: `0.0.0.0:52000`
+- Worker temp directory: `/dev/shm` (Improves performance by avoiding disk I/O for heartbeats)
+- Log level: `warning`
+
+### Runtime Details
+
+The container runs as a non-root `app` user.  
+Python output is unbuffered (`PYTHONUNBUFFERED=1`) for proper logging behavior.
+
+## :gear: Usage
+
+### :pencil: Prerequisites
+
+A Backblaze B2 API key with read access to the monitored buckets.
+
+### :page_facing_up: Env variables
+
+| Variable | Description | Default | Required |
+| --- | --- | --- | --- |
+| `B2_APPLICATION_KEY_ID` | B2 API key ID | - | :ballot_box_with_check: |
+| `B2_APPLICATION_KEY_FILE` | Path to file containing B2 API key | - | :ballot_box_with_check: |
+| `B2_BUCKETS_CONFIG` | JSON map of buckets and paths | - | :ballot_box_with_check: |
+| `B2_FILES_LATEST_ONLY` | Count only latest file versions | `false` | |
+| `METRICS_UPDATE_INTERVAL` | Seconds between B2 API refreshes | `3600` | |
+| `LOG_LEVEL` | Exporter log level | `INFO` | |
+
+Local development only:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `B2_APPLICATION_KEY` | B2 API key in plaintext (insecure) | - |
+| `FLASK_PORT` | Flask port | `52000` |
+
+### :whale: Run with Docker
+
+1. Pull the image:
 ```bash
-python ./backblaze-prometheus-exporter.py
+$ docker pull t0mmili/backblaze-prometheus-exporter:latest
 ```
 
-Or, setting the environment variables on the command line when executing:
-
+2. Run:
 ```bash
-B2_APPLICATION_KEY_ID=keyid B2_APPLICATION_KEY_FILE=./api_key \
-B2_PATHS='{"my-bucket": ["some/path/to/check", "some/other/path/to/check"]}' \
-./backblaze-prometheus-exporter.py
+$ docker run -d -p 52000:52000 -v $(pwd)/b2_api_key:/backblaze_exporter/api_key:ro \
+    -e B2_APPLICATION_KEY_ID=yourkeyid \
+    -e B2_APPLICATION_KEY_FILE=/backblaze_exporter/api_key \
+    -e B2_BUCKETS_CONFIG='{"my-bucket": ["some/path/to/check", "some/other/path/to/check"]}' \
+    --name backblaze-prometheus-exporter \
+    t0mmili/backblaze-prometheus-exporter
 ```
 
-### Run with Docker
+### :computer: Run with CLI
 
-Build the Docker image:
-
-```bash
-docker build -t backblaze-prometheus-exporter .
-```
-
-Then run:
+1. Install dependencies:
 
 ```bash
-docker run --rm -p 52000:52000 -v $(pwd)/b2_api_key:/etc/b2/api_key:ro \
-  -e B2_APPLICATION_KEY_ID=yourkeyid \
-  -e B2_APPLICATION_KEY_FILE=/etc/b2/api_key \
-  -e B2_PATHS='{"my-bucket": ["some/path/to/check", "some/other/path/to/check"]}' \
-  --name backblaze-prometheus-exporter \
-  backblaze-prometheus-exporter
+$ uv sync --locked
 ```
+
+2. Run:
+
+```bash
+$ uv run -m app.main
+```
+
+## :handshake: Contribution
+
+Contributions are greatly appreciated! If you want to report a bug or request a feature, please [open an issue](https://github.com/t0mmili/backblaze-prometheus-exporter/issues).
+
+## :page_facing_up: License
+
+This project is licensed under the [MIT License](https://github.com/t0mmili/backblaze-prometheus-exporter/blob/main/LICENSE).
+
+## :link: Credits
+
+This exporter was originally based on [backblaze-prometheus-exporter](https://github.com/axiom-data-science/backblaze-prometheus-exporter) by **axiom-data-science**. It is used under the [MIT License](https://github.com/t0mmili/backblaze-prometheus-exporter/blob/main/LICENSE).

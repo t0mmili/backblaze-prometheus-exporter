@@ -1,0 +1,34 @@
+<html>
+    <head>
+        <title>{{ app_name }}</title>
+        <style>
+            body { font-family: system-ui, sans-serif; margin: 0; }
+            header { background-color: #f22e26; color: #fff; font-size: 1rem; padding: 1rem; }
+            main { padding: 1rem; }
+            label { display: inline-block; width: 0.5em; }
+            .container { border: black 2px solid; padding: 1rem; width: fit-content; display: flex; flex-direction: column; gap: 0.5rem; }
+            .container p, .container ul { margin: 0; }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>{{ app_name }}</h1>
+        </header>
+        <main>
+            <h2>Prometheus Exporter for Backblaze B2</h2>
+            <div>Version: (exporter={{ app_version }}, python_b2_sdk={{ b2_sdk_version }})</div>
+                <ul>
+                    <li><a href="/metrics">Metrics</a></li>
+                </ul>
+            </div>
+            <div class="container">
+                <p>Exporter Info:</p>
+                <ul>
+                    <li>Configured buckets: {{ paths_count }}</li>
+                    <li>Latest files only: {{ latest_only }}</li>
+                    <li>Update interval: {{ interval }} s</li>
+                </ul>
+            </div>
+        </main>
+    </body>
+</html>

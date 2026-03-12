@@ -1,0 +1,14 @@
+[project]
+name = "backblaze-prometheus-exporter"
+version = "0.1.0"
+description = "Prometheus Exporter for Backblaze B2"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+
+dependencies = [
+    "b2sdk>=2.10.0,<3.0.0",
+    "flask>=3.0.0,<4.0.0",
+    "json-repair>=0.58.0,<1.0.0",
+    "jsonschema>=4.26.0,<5.0.0",
+    "prometheus-client>=0.24.0,<1.0.0",
+]
