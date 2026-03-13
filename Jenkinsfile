@@ -14,24 +14,6 @@ pipeline {
 
   parameters {
     string(
-        defaultValue: '',
-        description: 'Git repo url',
-        name: 'gitUrl',
-        trim: true
-    )
-    string(
-        defaultValue: '',
-        description: 'Git repo branch',
-        name: 'gitBranch',
-        trim: true
-    )
-    string(
-        defaultValue: '',
-        description: 'Git credentials id',
-        name: 'gitCredentials',
-        trim: true
-    )
-    string(
       name: 'dockerRepo',
       defaultValue: 't0mmili/backblaze-prometheus-exporter',
       description: 'Docker Hub repository',
@@ -73,7 +55,6 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
-        // checkout([$class: 'GitSCM', branches: [[name: '*/$gitBranch']], extensions: [[$class: 'LocalBranch', localBranch: gitBranch]], userRemoteConfigs: [[credentialsId: gitCredentials, url: gitUrl]]])
       }
     }
     stage('Docker login') {
