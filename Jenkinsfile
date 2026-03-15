@@ -10,6 +10,7 @@ pipeline {
       daysToKeepStr: '',
       numToKeepStr: '5'
     )
+    skipDefaultCheckout true
   }
 
   parameters {
@@ -87,24 +88,32 @@ pipeline {
         sh '''
           docker buildx build \
             --platform linux/amd64 \
+            --progress plain \
             -t ${dockerRepo}:${dockerTag} \
-            --load \
+            --output type=docker,dest=image.tar,compression=gzip \
             .
         '''
+      }
+      post {
+        success {
+          stash includes: 'image.tar', name: 'docker-image'
+        }
       }
     }
     stage('Scan image') {
       agent { label 'docker-agent-trivy' }
       steps {
-        sh """
+        unstash 'docker-image'
+
+        sh '''
           trivy image \
+            --input image.tar \
             --format json \
             --output trivy-results.json \
             --severity HIGH,CRITICAL \
             --exit-code 0 \
-            --no-progress \
-            ${dockerRepo}:${dockerTag}
-        """
+            --no-progress
+        '''
       }
       post {
         always {
@@ -141,7 +150,10 @@ pipeline {
 
   post {
     always {
-      sh 'docker logout || true'
+      sh '''
+        docker buildx rm jenkins-builder || true
+        docker logout || true
+      '''
       cleanWs()
     }
     success {
