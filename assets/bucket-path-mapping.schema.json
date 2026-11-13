@@ -1,16 +1,26 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://github.com/t0mmili/backblaze-prometheus-exporter/bucket-path-mapping.schema.json",
+    "title": "B2 bucket to path mapping",
+    "description": "Value of B2_BUCKETS_CONFIG environment variable",
     "type": "object",
+    "minProperties": 1,
     "propertyNames": {
         "type": "string",
-        "minLength": 1
+        "minLength": 6,
+        "maxLength": 63
     },
     "additionalProperties": {
         "type": "array",
+        "description": "Paths within the bucket. Empty string means the whole bucket.",
         "minItems": 1,
+        "uniqueItems": true,
         "items": {
             "type": "string"
         }
     },
-    "minProperties": 1
+    "examples": [
+        { "my-backups": ["postgres", "etcd-snapshots"] },
+        { "my-archive": [""] }
+    ]
 }

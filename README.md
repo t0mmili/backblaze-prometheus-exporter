@@ -9,20 +9,57 @@ Export Prometheus metrics for Backblaze B2 buckets and paths, including file cou
 
 Supports monitoring multiple buckets and paths with background data collection to ensure high performance.
 
+The background collector is resilient by design: transient B2 failures (DNS, network, expired session token, API errors) are retired with exponential backoff, and a failure on one bucket never stops the others.
+
 ## :bar_chart: Metrics
 
 ### Backblaze B2
 
 - `backblaze_b2_path_files_count` - Gauge: Total number of files in the path.
 - `backblaze_b2_path_files_latest_version_only` - Gauge: Whether only the latest version (1) or all versions (0) of files are processed.
-- `backblaze_b2_path_last_upload_seconds` - Gauge: Unix timestamp of the most recent upload in the path.
+- `backblaze_b2_path_last_upload_timestamp_seconds` - Gauge: Unix timestamp (seconds) of the most recent upload in the path. `0` means the path contains no files
 - `backblaze_b2_path_size_bytes` - Gauge: Total size of files in the path.
 
 ### Exporter
 
-- `backblaze_b2_scrape_duration_seconds` - Gauge: Time taken to fetch stats.
-- `backblaze_b2_scrape_last_time_seconds` - Unix timestamp of the most recent successful scrape.
+- `backblaze_b2_scrape_duration_seconds` - Gauge: Time taken to fetch stats for a bucket.
+- `backblaze_b2_scrape_last_success_timestamp_seconds` - Gauge: Unix timestamp (seconds) of the most recent successful scrape of the bucket.
 - `backblaze_b2_scrape_success` - Gauge: Whether the last scrape was successful (1) or failed (0).
+
+### Collector
+- `backblaze_b2_collector_up` - Gauge: Wheather the collection loop currently holds a valid B2 authorization (1) or not (0).
+- `backblaze_b2_collector_last_success_timestamp_seconds` - Gauge: Unix timestamp (seconds) of the most recent cycle that scraped at least one bucket.
+- `backblaze_b2_collector_errors_total` - Gauge: Collection errors by `reason`. Per-bucket reasons (`bucket_not_found`, `unauthorized`, `connection_error`, `b2_api_error`, `unexpected_error`) and per-cycle reasons (`auth_rejected`, `all_buckets_failed`, `b2_unavailable`) are both counted here, so one cycle contribute several increments.
+
+### :rotating_light: Example Alert
+
+```promql
+# The exporter is serving, but the collector cannot reach or authorize to B2
+backblaze_b2_collector_up == 0
+
+# Data is stale (default interval 3600s -> deadline 7200s)
+time() - backblaze_b2_collector_last_success_timestamp_seconds > 7200
+
+# A single bucket is failing while the rest work
+backblaze_b2_scrape_success == 0
+
+# No upload in a path for 24h
+time() - (backblaze_b2_path_last_upload_timestamp_seconds)
+```
+
+## :heartbeat: Health Endpoints
+
+| Endpoint | Question it answers | Status 200 | Status 503 |
+| --- | --- | --- | --- |
+| `/healthz` | Liveness: is the collector thread alive and iterating? | Thread alive and last iteration within the deadline | Thread dead, or no iteration within the deadline |
+| `/readyz` | Readiness: is there fresh B2 data behind this process? | Authorized and last success within the deadline | Not authorized, never succeeded, or data stale |
+
+`/healthz` deliberately does **not** depend on B2 being reachable, so an upstream outage cannot cause a restart loop.
+
+`/readyz` does, so an exporter with stale data is removed from service while the pod keeps running and retrying.
+
+> [!CAUTION]
+> Do not point probes at `/`. The landing page always returns 200 regardless of collector state.
 
 ## :stopwatch: Understanding Intervals
 
@@ -30,6 +67,36 @@ It is important to distinguish between how Prometheus collects data and how this
 
 - `scrape_interval` **(Prometheus)**: This defines how often Prometheus hits the `/metrics` endpoint. Because this exporter uses a background thread, the `/metrics` endpoint responds instantly with cached data.
 - `METRICS_UPDATE_INTERVAL` **(Exporter)**: This defines how often the background thread actually calls the Backblaze B2 API.
+
+`METRICS_UPDATE_INTERVAL` is the only timing knob - retry and health behaviour are derived from it:
+
+| Derived value | Rule | Default (interval = 3600) |
+| --- | --- | --- |
+| First retry delay | `min(5, interval)` s | 5 s |
+| Maximum retry delay | `min(300, interval)` s | 300 s |
+| Health deadline (`/healthz`, `/readyz`) | `max(2 × interval, 300)` s | 7200 s |
+| Cycle jitter | ±5% of the interval | ±180 s |
+
+Cycles are scheduled on a fixed grid (`start + n × interval`) on the monotonic clock, so scrape duration and jitter do not accumulate: the cadence stays on schedule even after a long outage. Jitter keeps multiple replicas from hitting the B2 API in lockstep.
+
+## :open_file_folder: Bucket and Path Configuration
+
+`B2_BUCKETS_CONFIG` is a JSON object mapping bucket names to a list of paths, validated at startup against schema.
+
+```json
+{
+  "my-backups": ["postgres", "etcd-snapshots"],
+  "my-archive": [""]
+}
+```
+
+Rules:
+
+- At least **one bucket** and at least **one path** per bucket. An empty object or an empty path list is rejected at startup.
+- Use `""` to cover the **whole bucket**.
+- Paths are prefixes within the bucket and must **not start** with `/`.
+- Paths must be **unique** per bucket.
+- Overlapping paths (for example `backups` and `backups/db`) are allowed. Files in the nested path are counted in both.
 
 ## :rocket: Production Deployment
 
@@ -57,6 +124,8 @@ The image ships with the following default settings:
 The container runs as a non-root `app` user.  
 Python output is unbuffered (`PYTHONUNBUFFERED=1`) for proper logging behavior.
 
+Exporter logs are single-line JSON on stdout, with an `event` field on every record for filtering. Gunicorn's own access and error logs are plain text and are not routed through the JSON formatter.
+
 ## :gear: Usage
 
 ### :pencil: Prerequisites
@@ -73,6 +142,9 @@ A Backblaze B2 API key with read access to the monitored buckets.
 | `B2_FILES_LATEST_ONLY` | Count only latest file versions | `false` | |
 | `METRICS_UPDATE_INTERVAL` | Seconds between B2 API refreshes | `3600` | |
 | `LOG_LEVEL` | Exporter log level | `INFO` | |
+| `B2SDK_LOG_LEVEL` | Log level for the `b2sdk` library | `WARNING` | |
+| `URLLIB3_LOG_LEVEL` | Log level for `urllib3.connectionpool` | `WARNING` | |
+| `WERKZEUG_LOG_LEVEL` | Log level for Werkzeug (development server) | `WARNING` | |
 
 Local development only:
 
