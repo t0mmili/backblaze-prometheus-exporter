@@ -1,256 +1,101 @@
+"""Exporter entrypoint: loads configuration, starts the collector, serves HTTP.
+
+The /metrics endpoint only reads values cached by the background collector, so
+Prometheus scrapes never call the B2 API.
+"""
+
 #!/usr/bin/env python3
 
 import os
+import sys
 import time
-import threading
+import json
 import json_repair
 import jsonschema
-import prometheus_client as prom
+
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from flask import Flask, Response, render_template
-from b2sdk.v3 import B2Api, InMemoryAccountInfo
-from b2sdk.v3.exception import (
-    B2Error, BucketIdNotFound, InvalidAuthToken, Unauthorized,
-    B2ConnectionError
-)
+from b2sdk.version import VERSION as B2_SDK_VERSION
+from flask import Flask, Response, jsonify, render_template
+
 from app.app_config import (
-    APP_NAME, APP_VERSION, B2_SDK_VERSION, B2_BUCKETS_SCHEMA_FILE,
-    FLASK_TEMPLATE_FOLDER
+    APP_NAME, APP_VERSION, B2_BUCKETS_SCHEMA_FILE, FLASK_TEMPLATE_FOLDER
 )
 from app.logging_config import setup_logging
+from app.collector import collector_state, freshness_deadline, start_collector
 
 # --- LOGGING SETUP ---
 
 logger = setup_logging()
 
-# --- METRICS SETUP ---
-
-prom.REGISTRY.unregister(prom.PROCESS_COLLECTOR)
-prom.REGISTRY.unregister(prom.PLATFORM_COLLECTOR)
-prom.REGISTRY.unregister(prom.GC_COLLECTOR)
-
-# Metrics definition
-path_count = prom.Gauge(
-    "backblaze_b2_path_files_count",
-    "Total number of files in the path",
-    ['bucket', 'path']
-)
-path_latest_only = prom.Gauge(
-    "backblaze_b2_path_files_latest_version_only",
-    "Whether only the latest version (1) or all versions (0) of files are "
-    "processed",
-    ['bucket']
-)
-path_last_upload = prom.Gauge(
-    "backblaze_b2_path_last_upload_seconds",
-    "Unix timestamp of the most recent upload in the path",
-    ['bucket', 'path']
-)
-path_size = prom.Gauge(
-    "backblaze_b2_path_size_bytes",
-    "Total size of files in the path",
-    ['bucket', 'path']
-)
-scrape_duration = prom.Gauge(
-    "backblaze_b2_scrape_duration_seconds",
-    "Time taken to fetch stats",
-    ['bucket']
-)
-scrape_last_time = prom.Gauge(
-    "backblaze_b2_scrape_last_time_seconds",
-    "Unix timestamp of the most recent successful scrape",
-    ['bucket']
-)
-scrape_success = prom.Gauge(
-    "backblaze_b2_scrape_success",
-    "Whether the last scrape was successful (1) or failed (0)",
-    ['bucket']
-)
-
-# --- B2 LOGIC ---
-
-def init_b2(key_id: str, key: str) -> B2Api:
-    info = InMemoryAccountInfo()
-    b2_api = B2Api(info)
-
-    try:
-        b2_api.authorize_account(key_id, key, "production")
-        logger.info(
-            "B2 authorization successful",
-            extra={"event": "b2_auth_success"}
-        )
-        return b2_api
-
-    except (InvalidAuthToken, Unauthorized) as e:
-        logger.error(
-            "B2 authentication failed",
-            extra={"event": "b2_auth_failed", "error": str(e)}
-        )
-        raise
-
-    except B2ConnectionError as e:
-        logger.error(
-            "Connection error during B2 authorization",
-            extra={"event": "b2_connection_error", "error": str(e)}
-        )
-        raise
-
-    except B2Error as e:
-        logger.error(
-            "Unexpected B2 error during authorization",
-            extra={"event": "b2_unexpected_error", "error": str(e)}
-        )
-        raise
-
-def update_b2_metrics(b2_api: B2Api, config: dict) -> None:
-    logger.debug(
-        "Starting buckets metrics update",
-        extra={"event": "metrics_update_started"}
-    )
-
-    for bucket_name, paths in config['b2_buckets'].items():
-        try:
-            start_time = time.time()
-            bucket = b2_api.get_bucket_by_name(bucket_name)
-
-            path_latest_only.labels(bucket=bucket_name).set(
-                1 if config['b2_latest_only'] else 0
-            )
-
-            for path in paths:
-                count, size, last_ts = 0, 0, 0
-                for file_version, _ in bucket.ls(
-                    path=path, latest_only=config['b2_latest_only'],
-                    recursive=True
-                ):
-                    count += 1
-                    size += file_version.size
-                    last_ts = max(last_ts, file_version.upload_timestamp)
-
-                path_count.labels(bucket=bucket_name, path=path).set(count)
-                path_size.labels(bucket=bucket_name, path=path).set(size)
-                path_last_upload.labels(bucket=bucket_name, path=path).set(
-                    last_ts
-                )
-
-                logger.debug(
-                    "Path statistics",
-                    extra={"event": "path_stats", "bucket": bucket_name,
-                        "path": path, "files": count, "size_bytes": size,
-                        "last_upload_ts": last_ts
-                    }
-                )
-
-            duration = time.time() - start_time
-
-            scrape_success.labels(bucket=bucket_name).set(1)
-            scrape_duration.labels(bucket=bucket_name).set(duration)
-            scrape_last_time.labels(bucket=bucket_name).set(time.time() * 1000)
-
-            if duration > 30:
-                logger.warning(
-                    "Bucket metrics update is slow",
-                    extra={
-                        "event": "metrics_update_slow",
-                        "bucket": bucket_name,
-                        "duration": duration
-                    }
-                )
-
-            logger.info(
-                "Bucket metrics updated",
-                extra={
-                    "event": "metrics_update_successful", "bucket": bucket_name
-                }
-            )
-
-        except BucketIdNotFound:
-            logger.error(
-                "Bucket not found",
-                extra={"event": "bucket_not_found", "bucket": bucket_name}
-            )
-            scrape_success.labels(bucket=bucket_name).set(0)
-            raise
-
-        except InvalidAuthToken:
-            logger.error(
-                "B2 authentication token expired or invalid",
-                extra={"event": "b2_token_invalid"}
-            )
-            scrape_success.labels(bucket=bucket_name).set(0)
-            raise
-
-        except B2ConnectionError as e:
-            logger.warning(
-                "Network error while accessing bucket",
-                extra={
-                    "event": "b2_network_error", "error": str(e),
-                    "bucket": bucket_name
-                }
-            )
-            scrape_success.labels(bucket=bucket_name).set(0)
-
-        except B2Error as e:
-            logger.error(
-                "B2 API error while processing bucket",
-                extra={
-                    "event": "b2_api_error", "error": str(e),
-                    "bucket": bucket_name
-                }
-            )
-            scrape_success.labels(bucket=bucket_name).set(0)
-            raise
-
-        except Exception as e:
-            logger.error(
-                "Unexpected error during metrics update",
-                extra={
-                    "event": "metrics_update_unexpected_error",
-                    "error": str(e), "bucket": bucket_name
-                }
-            )
-            scrape_success.labels(bucket=bucket_name).set(0)
-            raise
-
-    logger.debug(
-        "Completed buckets metrics update",
-        extra={"event": "metrics_update_completed"}
-    )
-
-def collection_loop(config: dict) -> None:
-    b2_api = init_b2(config['b2_app_key_id'], config['b2_app_key'])
-    while True:
-        update_b2_metrics(b2_api, config)
-        time.sleep(config['update_interval'])
-
 # --- WEB SERVER ---
 
 def create_app(config: dict) -> Flask:
+    """Build the Flask app with the landing page, metrics and health routes."""
     app = Flask(__name__, template_folder=str(FLASK_TEMPLATE_FOLDER))
+    deadline = freshness_deadline(config['update_interval'])
 
     @app.route('/')
     def welcome():
+        """Landing page with version, configuration and endpoint links."""
         return render_template(
             'index.html', app_name=APP_NAME, app_version=APP_VERSION,
             b2_sdk_version=B2_SDK_VERSION,
-            paths_count=len(config['b2_buckets']),
+            buckets_count=len(config['b2_buckets']),
             latest_only=config['b2_latest_only'],
-            interval=config['update_interval']
+            interval=config['update_interval'],
+            deadline=deadline
         )
 
     @app.route('/metrics')
     def metrics():
+        """Metrics: expose Prometheus metrics."""
         logger.debug(
             "Prometheus scrape request received",
             extra={"event": "metrics_request_received"}
         )
+
         return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+    @app.route('/healthz')
+    def healthz():
+        """Liveness: is the collector thread alive and iterating."""
+        snap = collector_state.snapshot()
+        stalled_for = time.time() - snap['last_iteration_ts']
+        healthy = snap['thread_alive'] and stalled_for <= deadline
+
+        return jsonify({
+            "status": "ok" if healthy else "unhealthy",
+            "collector_thread_alive": snap['thread_alive'],
+            "seconds_since_last_iteration": round(stalled_for, 1),
+            "deadline_seconds": deadline, "last_error": snap['last_error'],
+        }), (200 if healthy else 503)
+
+    @app.route('/readyz')
+    def readyz():
+        """Readiness: is there fresh B2 data behind this process."""
+        snap = collector_state.snapshot()
+        last = snap['last_success_ts']
+        age = None if last is None else time.time() - last
+        ready = snap['authorized'] and age is not None and age <= deadline
+
+        return jsonify({
+            "status": "ready" if ready else "not_ready",
+            "authorized": snap['authorized'],
+            "credentials_rejected": snap['fatal'],
+            "seconds_since_last_success": (
+                None if age is None else round(age, 1)
+            ),
+            "deadline_seconds": deadline,
+            "last_error": snap['last_error'],
+        }), (200 if ready else 503)
 
     return app
 
 # --- CONFIG & MAIN ---
 
 def get_env_required(name: str) -> str | None:
+    """Read a mandatory environment variable, logging and returning None if
+    unset."""
     value = os.environ.get(name)
     if not value:
         logger.error(
@@ -260,7 +105,40 @@ def get_env_required(name: str) -> str | None:
         return None
     return value
 
+def get_env_int(name: str, default: int, minimum: int = 0) -> int:
+    """Read an integer environment variable, falling back to default and
+    clamping."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Environment variable is not a valid integer, using default",
+            extra={
+                "event": "config_invalid_int", "env_var": name, "value": raw,
+                "default": default
+            }
+        )
+        return default
+    if value < minimum:
+        logger.warning(
+            "Environment variable below minimum, clamping",
+            extra={
+                "event": "config_value_clamped", "env_var": name,
+                "value": value, "minimum": minimum
+            }
+        )
+        return minimum
+    return value
+
 def verify_and_load_config() -> dict | None:
+    """Load and validate configuration from the environment.
+
+    Returns the config dict, or None if anything is missing or invalid; the
+    caller is expected to exit non-zero in that case.
+    """
     key_id = get_env_required("B2_APPLICATION_KEY_ID")
     buckets_raw = get_env_required("B2_BUCKETS_CONFIG")
 
@@ -287,11 +165,18 @@ def verify_and_load_config() -> dict | None:
         else:
             return None
 
+        if not key:
+            logger.error(
+                "B2 application key file is empty",
+                extra={"event": "config_app_key_file_empty"}
+            )
+            return None
+
     latest_only = os.environ.get("B2_FILES_LATEST_ONLY", "false").lower() in (
         "true", "1", "yes"
     )
-    port = int(os.environ.get("FLASK_PORT", "52000"))
-    interval = int(os.environ.get("METRICS_UPDATE_INTERVAL", "3600"))
+    port = get_env_int("FLASK_PORT", 52000, minimum=1)
+    interval = get_env_int("METRICS_UPDATE_INTERVAL", 3600, minimum=1)
 
     buckets_json = json_repair.loads(buckets_raw)
 
@@ -305,8 +190,15 @@ def verify_and_load_config() -> dict | None:
         )
         return None
 
-    with open(B2_BUCKETS_SCHEMA_FILE) as fp:
-        schema_json = json_repair.loads(fp.read())
+    try:
+        with open(B2_BUCKETS_SCHEMA_FILE) as fp:
+            schema_json = json.load(fp)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.error(
+            "Failed to read buckets config schema",
+            extra={"event": "config_schema_read_error", "error": str(e)}
+        )
+        return None
 
     if not isinstance(schema_json, dict):
         logger.error(
@@ -344,7 +236,7 @@ def verify_and_load_config() -> dict | None:
             "paths_total": sum(len(p) for p in buckets_json.values()),
             "latest_only": latest_only,
             "update_interval": interval,
-            "port": port
+            "port": port,
         }
     )
 
@@ -352,29 +244,24 @@ def verify_and_load_config() -> dict | None:
 
 config = verify_and_load_config()
 
-if config:
-    updater_thread = threading.Thread(
-        target=collection_loop, 
-        args=(config,), 
-        daemon=True
+if not config:
+    logger.error(
+        "Exporter failed to start due to configuration errors",
+        extra={"event": "exporter_startup_failed"}
     )
-    updater_thread.start()
+    sys.exit(1)
 
-    logger.info(
-        "Metrics update thread started",
-        extra={"event": "metrics_update_thread_started"}
-    )
+start_collector(config)
+app = create_app(config)
 
-    app = create_app(config)
-
-    logger.info(
-        "Exporter started",
-        extra={
-            "event": "exporter_startup_successful",
-            "exporter_version": APP_VERSION,
-            "b2_sdk_version": B2_SDK_VERSION
-        }
-    )
+logger.info(
+    "Exporter started",
+    extra={
+        "event": "exporter_startup_successful",
+        "exporter_version": APP_VERSION,
+        "b2_sdk_version": B2_SDK_VERSION
+    }
+)
 
 if __name__ == "__main__":
     if config:
@@ -384,4 +271,4 @@ if __name__ == "__main__":
             "Exporter failed to start due to configuration errors",
             extra={"event": "exporter_startup_failed"}
         )
-        exit(1)
+        sys.exit(1)

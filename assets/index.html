@@ -1,11 +1,13 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
     <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{{ app_name }}</title>
         <style>
             body { font-family: system-ui, sans-serif; margin: 0; }
             header { background-color: #f22e26; color: #fff; font-size: 1rem; padding: 1rem; }
-            main { padding: 1rem; }
-            label { display: inline-block; width: 0.5em; }
+            main { padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
             .container { border: black 2px solid; padding: 1rem; width: fit-content; display: flex; flex-direction: column; gap: 0.5rem; }
             .container p, .container ul { margin: 0; }
         </style>
@@ -15,18 +17,22 @@
             <h1>{{ app_name }}</h1>
         </header>
         <main>
-            <h2>Prometheus Exporter for Backblaze B2</h2>
-            <div>Version: (exporter={{ app_version }}, python_b2_sdk={{ b2_sdk_version }})</div>
+            <div>
+                <h2>Prometheus Exporter for Backblaze B2</h2>
+                Version: (exporter={{ app_version }}, b2_python_sdk={{ b2_sdk_version }})
                 <ul>
                     <li><a href="/metrics">Metrics</a></li>
+                    <li><a href="/healthz">Liveness</a></li>
+                    <li><a href="/readyz">Readiness</a></li>
                 </ul>
             </div>
             <div class="container">
                 <p>Exporter Info:</p>
                 <ul>
-                    <li>Configured buckets: {{ paths_count }}</li>
-                    <li>Latest files only: {{ latest_only }}</li>
+                    <li>Configured buckets: {{ buckets_count }}</li>
+                    <li>Latest files only: {{ 'yes' if latest_only else 'no' }}</li>
                     <li>Update interval: {{ interval }} s</li>
+                    <li>Health deadline: {{ deadline }} s</li>
                 </ul>
             </div>
         </main>

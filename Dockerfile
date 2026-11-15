@@ -20,7 +20,7 @@ FROM python:3.14-alpine
 LABEL org.opencontainers.image.title="backblaze-prometheus-exporter" \
       org.opencontainers.image.description="Prometheus Exporter for Backblaze B2 bucket metrics" \
       org.opencontainers.image.source="https://github.com/t0mmili/backblaze-prometheus-exporter" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="0.2.0" \
       org.opencontainers.image.licenses="MIT"
 
 ARG APP_DIR=/backblaze_exporter
