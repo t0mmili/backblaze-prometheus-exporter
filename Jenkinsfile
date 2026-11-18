@@ -96,7 +96,31 @@ pipeline {
       parallel {
         stage('Dockerfile lint') {
           steps {
-            sh 'docker run --rm -i hadolint/hadolint hadolint -f codeclimate -t warning - < Dockerfile'
+            sh '''
+              docker run \
+                --rm -i \
+                hadolint/hadolint \
+                hadolint \
+                --format json \
+                --failure-threshold none \
+                - < Dockerfile \
+                > hadolint-results.json
+            '''
+          }
+          post {
+            always {
+              archiveArtifacts artifacts: 'hadolint-results.json', fingerprint: true
+              recordIssues(
+                enabledForFailure: true,
+                qualityGates: [
+                  [criticality: 'FAILURE', integerThreshold: 1, threshold: 1.0, type: 'NEW_ERROR'],
+                  [criticality: 'FAILURE', integerThreshold: 1, threshold: 1.0, type: 'NEW_HIGH'],
+                  [criticality: 'UNSTABLE', integerThreshold: 1, threshold: 1.0, type: 'NEW_NORMAL'],
+                  [criticality: 'FAILURE', integerThreshold: 1, threshold: 1.0, type: 'TOTAL_ERROR']
+                ],
+                tools: [hadoLint(pattern: 'hadolint-results.json')]
+              )
+            }
           }
         }
       }
