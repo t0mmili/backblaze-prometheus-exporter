@@ -36,7 +36,7 @@ ARG APP_VERSION=0.0.0-dev
 LABEL org.opencontainers.image.title="backblaze-prometheus-exporter" \
       org.opencontainers.image.description="Prometheus Exporter for Backblaze B2 bucket metrics" \
       org.opencontainers.image.source="https://github.com/t0mmili/backblaze-prometheus-exporter" \
-      org.opencontainers.image.version="${APP_VERSION}}" \
+      org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.licenses="MIT"
 
 WORKDIR ${APP_DIR}
@@ -59,7 +59,7 @@ ENV PATH="${APP_DIR}/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-USER app
+USER 10001:10001
 
 EXPOSE 52000
 

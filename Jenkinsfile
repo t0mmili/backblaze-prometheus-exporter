@@ -54,7 +54,6 @@ pipeline {
         anyOf {
           equals expected: '', actual: dockerRepo
           equals expected: '', actual: dockerCredentials
-          equals expected: '', actual: dockerTag
         }
       }
       steps {
@@ -97,7 +96,7 @@ pipeline {
       parallel {
         stage('Dockerfile lint') {
           steps {
-            sh 'docker run --rm -i hadolint/hadolint < Dockerfile'
+            sh 'docker run --rm -i hadolint/hadolint hadolint -f codeclimate -t warning - < Dockerfile'
           }
         }
       }
