@@ -4,6 +4,7 @@ Values here are fixed at build time. User-supplied configuration is read
 from the environment in app.main.
 """
 
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 # Project directories
@@ -13,7 +14,12 @@ ASSETS_DIR = BASE_DIR / "assets"
 # General information
 APP_AUTHOR = 't0mmili'
 APP_NAME = 'Backblaze Prometheus Exporter'
-APP_VERSION = '0.2.0'
+DIST_NAME = 'backblaze-prometheus-exporter'
+
+try:
+    APP_VERSION = version(DIST_NAME)
+except PackageNotFoundError:
+    APP_VERSION = '0.0.0+unknown'
 
 # Assets
 B2_BUCKETS_SCHEMA_FILE = ASSETS_DIR / 'bucket-path-mapping.schema.json'
