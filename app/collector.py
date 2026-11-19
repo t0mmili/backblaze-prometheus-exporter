@@ -152,14 +152,14 @@ class B2ReauthRequired(Exception):
 # --- DERIVED TIMING ---
 
 def freshness_deadline(interval: int) -> int:
-    """How stale data may get before the exporter reports itself unhealhy.
+    """How stale data may get before the exporter reports itself unhealthy.
 
     Two missed cycles, floored at 5 minutes.
     """
     return max(2 * interval, 300)
 
 def _next_cycle_sleep(anchor: float, interval: int) -> float:
-    """Seconds until the next cycle on the gird `anchor + n * interval`.
+    """Seconds until the next cycle on the fixed grid `anchor + n * interval`.
 
     Monotonic and anchored, so neither scrape duration nor jitter accumulates.
     """
@@ -176,7 +176,7 @@ def init_b2(key_id: str, key: str) -> B2Api:
     """Create and authorize a B2 session.
 
     Raises FatalAuthError if the credentials are rejected; any other B2Error
-    propagates and is retireds by the caller.
+    propagates and is retried by the caller.
     """
     b2_api = B2Api(InMemoryAccountInfo())
 

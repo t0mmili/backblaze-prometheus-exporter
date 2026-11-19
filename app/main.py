@@ -4,8 +4,6 @@ The /metrics endpoint only reads values cached by the background collector, so
 Prometheus scrapes never call the B2 API.
 """
 
-#!/usr/bin/env python3
-
 import os
 import sys
 import time
@@ -264,11 +262,4 @@ logger.info(
 )
 
 if __name__ == "__main__":
-    if config:
-        app.run(host='0.0.0.0', port=config['port'], debug=False)
-    else:
-        logger.error(
-            "Exporter failed to start due to configuration errors",
-            extra={"event": "exporter_startup_failed"}
-        )
-        sys.exit(1)
+    app.run(host='0.0.0.0', port=config['port'], debug=False)
